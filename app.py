@@ -233,6 +233,7 @@ def get_access_token(chat_id):
 
     access_token, refresh_token, expires_at, _scope = row
 
+    # Refresh shortly before expiry.
     if expires_at and expires_at <= int(time.time()) + 60:
         if not refresh_token:
             raise RuntimeError(
@@ -387,6 +388,8 @@ def escape_graphql_string(value):
 
 
 def youtube_title(text):
+    # Use first line as YouTube title.
+    # Buffer requires a title when creating a YouTube post.
     first_line = (
         (text or "")
         .splitlines()[0]
@@ -396,6 +399,7 @@ def youtube_title(text):
     if not first_line:
         first_line = "New Short"
 
+    # Keep under YouTube's 100-character title limit.
     return first_line[:100]
 
 
@@ -414,7 +418,7 @@ def build_service_metadata(service, text):
         youtube_title(text)
     )
 
-    # YouTube Shorts (Fixed Type Error)
+    # YouTube Shorts
     if "youtube" in service_name:
         return f"""
           metadata: {{
@@ -450,6 +454,7 @@ def build_service_metadata(service, text):
           }
         """
 
+    # Unknown service
     return ""
 
 
