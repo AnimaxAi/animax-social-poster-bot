@@ -148,7 +148,18 @@ def buffer_graphql(access_token, query):
 
 
 def get_organizations(access_token):
-    return buffer_graphql(access_token, "query { organizations { id name } }")["data"]["organizations"]
+    query = """
+    query GetOrganizations {
+      account {
+        organizations {
+          id
+          name
+        }
+      }
+    }
+    """
+    data = buffer_graphql(access_token, query)
+    return data["data"]["account"]["organizations"]
 
 
 def get_channels(access_token, organization_id):
