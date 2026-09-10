@@ -418,7 +418,7 @@ def build_service_metadata(service, text):
         youtube_title(text)
     )
 
-    # YouTube Shorts
+    # YouTube Shorts (Fixed metadata type)
     if "youtube" in service_name:
         return f"""
           metadata: {{
@@ -1167,10 +1167,15 @@ def main():
 
     db_init()
 
+    # Naya Code (60 seconds ki time limit ke sath)
     telegram = (
         Application
         .builder()
         .token(TELEGRAM_BOT_TOKEN)
+        .read_timeout(60)
+        .write_timeout(60)
+        .connect_timeout(60)
+        .pool_timeout(60)
         .build()
     )
 
