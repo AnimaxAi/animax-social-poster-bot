@@ -115,6 +115,10 @@ def save_tokens(chat_id, access_token, refresh_token=None, expires_in=None, scop
 def get_token_row(chat_id):
     return db.tokens.find_one({"chat_id": chat_id})
 
+def delete_tokens(chat_id):
+    db.tokens.delete_one({"chat_id": chat_id})
+    db.channels.delete_many({"chat_id": chat_id})
+
 def refresh_buffer_token(chat_id, refresh_token):
     response = requests.post(
         BUFFER_TOKEN_URL,
@@ -375,13 +379,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔗 Connect Buffer", callback_data="connect")],
         [InlineKeyboardButton("📹 Post Video", callback_data="post")],
+        [InlineKeyboardButton("🔌 Disconnect Buffer", callback_data="disconnect")],
     ]
     await update.message.reply_text(
         "🚀 Animax Universal Social Poster\n\n"
         "1. Connect your Buffer account.\n"
         "2. Send a video.\n"
         "3. Send caption.\n"
-        "4. Press POST ALL.",
+        "4. Press POST ALL.\n\n"
+        "Need to switch accounts? Press Disconnect Buffer.",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -393,6 +399,11 @@ async def post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.clear()
     state["waiting_video"] = True
     await update.message.reply_text("📹 Video bhejo.")
+
+async def disconnect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    delete_tokens(chat_id)
+    await update.message.reply_text("✅ Buffer account disconnected! Aap naya account connect kar sakte hain.")
 
 async def send_buffer_connect_link(chat_id, bot):
     if not BUFFER_CLIENT_ID or not BUFFER_CLIENT_SECRET or not BUFFER_REDIRECT_URI:
@@ -444,6 +455,11 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         state.clear()
         state["waiting_video"] = True
         await query.message.reply_text("📹 Video bhejo.")
+        return
+        
+    if query.data == "disconnect":
+        delete_tokens(chat_id)
+        await query.message.reply_text("✅ Buffer account disconnected! 'Connect Buffer' dabakar naya account link karein.")
         return
 
     if query.data != "post_all":
@@ -629,6 +645,7 @@ def main():
 
     telegram.add_handler(CommandHandler("start", start_command))
     telegram.add_handler(CommandHandler("connect", connect_command))
+    telegram.add_handler(CommandHandler("disconnect", disconnect_command))
     telegram.add_handler(CommandHandler("post", post_command))
     telegram.add_handler(CallbackQueryHandler(callback_button_handler))
     telegram.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, video_handler))
@@ -641,7 +658,7 @@ def main():
 
     print("==========================================")
     print("Animax Universal Social Poster Bot")
-    print("Telegram + Buffer OAuth + Cloudinary + MongoDB + Insta Fix")
+    print("Features: MongoDB + Insta Fix + Disconnect Support")
     print(f"HTTP port: {PORT}")
     print("==========================================")
 
