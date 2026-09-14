@@ -26,9 +26,7 @@ from telegram.ext import (
     filters,
 )
 
-# ============================================================
 # GOOGLE SDK
-# ============================================================
 from google import genai
 
 # ============================================================
@@ -61,44 +59,33 @@ memory = {}
 memory_lock = threading.Lock()
 
 # ============================================================
-# DATABASE (MONGODB)
+# DATABASE
 # ============================================================
 
-if not MONGO_URI:
-    raise RuntimeError("MONGO_URI is missing in environment variables.")
-
+if not MONGO_URI: raise RuntimeError("MONGO_URI is missing in environment variables.")
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["animax_social_bot"]
 
 # ============================================================
-# TELEGRAM MEMORY STATE
+# TELEGRAM STATE
 # ============================================================
 
 def get_state(chat_id):
-    with memory_lock:
-        return memory.setdefault(chat_id, {})
+    with memory_lock: return memory.setdefault(chat_id, {})
 
 def clear_state(chat_id):
-    with memory_lock:
-        memory.pop(chat_id, None)
+    with memory_lock: memory.pop(chat_id, None)
 
 # ============================================================
-# BUFFER CORE FUNCTIONS
+# BUFFER CORE
 # ============================================================
 
-def make_verifier():
-    return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
-
-def make_challenge(verifier):
-    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+def make_verifier(): return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
+def make_challenge(verifier): return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
 
 def save_tokens(chat_id, access_token, refresh_token=None, expires_in=None, scope=None):
     expires_at = int(time.time()) + int(expires_in) if expires_in else None
-    db.tokens.update_one(
-        {"chat_id": chat_id},
-        {"$set": {"access_token": access_token, "refresh_token": refresh_token, "expires_at": expires_at, "scope": scope}},
-        upsert=True
-    )
+    db.tokens.update_one({"chat_id": chat_id}, {"$set": {"access_token": access_token, "refresh_token": refresh_token, "expires_at": expires_at, "scope": scope}}, upsert=True)
 
 def delete_tokens(chat_id):
     db.tokens.delete_one({"chat_id": chat_id})
@@ -113,7 +100,7 @@ def refresh_buffer_token(chat_id, refresh_token):
 
 def get_access_token(chat_id):
     row = db.tokens.find_one({"chat_id": chat_id})
-    if not row: raise RuntimeError("Buffer is not connected. Send /connect first.")
+    if not row: raise RuntimeError("Buffer is not connected.")
     if row.get("expires_at") and row.get("expires_at") <= int(time.time()) + 60:
         return refresh_buffer_token(chat_id, row["refresh_token"])
     return row["access_token"]
@@ -131,10 +118,9 @@ def sync_channels(chat_id):
         safe_org_id = org["id"].replace("\\", "\\\\").replace('"', '\\"')
         chan_data = buffer_graphql(access_token, f'query {{ channels(input: {{ organizationId: "{safe_org_id}" }}) {{ id name displayName service }} }}')
         found.extend(chan_data["data"]["channels"])
-    
     db.channels.delete_many({"chat_id": chat_id})
-    for channel in found:
-        db.channels.insert_one({"chat_id": chat_id, "channel_id": channel["id"], "name": channel.get("displayName") or channel.get("name") or "", "service": channel.get("service") or ""})
+    for ch in found:
+        db.channels.insert_one({"chat_id": chat_id, "channel_id": ch["id"], "name": ch.get("displayName") or ch.get("name") or "", "service": ch.get("service") or ""})
     return found
 
 def escape_graphql_string(value):
@@ -143,23 +129,20 @@ def escape_graphql_string(value):
 def build_service_metadata(service, text):
     service_name = (service or "").strip().lower()
     first_line = (text or "").splitlines()[0].strip() if text else "New Short"
-    yt_title = escape_graphql_string(first_line[:100])
+    yt_title = escape_graphql_string(first_line[:90])  # YT title hard limit
 
-    if "youtube" in service_name:
-        return f'metadata: {{ youtube: {{ title: "{yt_title}", categoryId: "24", privacy: public, madeForKids: false, notifySubscribers: true, embeddable: true }} }}'
-    if "instagram" in service_name:
-        return 'metadata: { instagram: { type: reel, shouldShareToFeed: true } }'
-    if "facebook" in service_name:
-        return 'metadata: { facebook: { type: reel } }'
+    if "youtube" in service_name: return f'metadata: {{ youtube: {{ title: "{yt_title}", categoryId: "24", privacy: public, madeForKids: false, notifySubscribers: true, embeddable: true }} }}'
+    if "instagram" in service_name: return 'metadata: { instagram: { type: reel, shouldShareToFeed: true } }'
+    if "facebook" in service_name: return 'metadata: { facebook: { type: reel } }'
     return ""
 
 def create_video_post(access_token, channel_id, text, public_url, service, scheduled_at=None):
     safe_text, safe_url = escape_graphql_string(text), escape_graphql_string(public_url)
     service_metadata = build_service_metadata(service, text)
     
-    # Update: Pass Unix Timestamp (int) instead of string
+    # FIX: Added required "mode" for Buffer Custom Scheduling
     if scheduled_at:
-        sched_str = f'schedulingType: custom, scheduledAt: {scheduled_at}'
+        sched_str = f'schedulingType: custom, mode: custom, scheduledAt: {scheduled_at}'
     else:
         sched_str = 'schedulingType: automatic, mode: shareNow'
 
@@ -171,18 +154,9 @@ def create_video_post(access_token, channel_id, text, public_url, service, sched
     }}'''
     
     response = buffer_graphql(access_token, mutation)
-    
-    # Update: Smart Error Handling
-    if "errors" in response:
-        err_msg = response["errors"][0].get("message", "Unknown API Format Error")
-        raise RuntimeError(f"Buffer Error: {err_msg}")
-        
-    if "data" not in response or "createPost" not in response["data"]:
-        raise RuntimeError(f"Unexpected response structure: {response}")
-        
-    if "message" in response["data"]["createPost"]: 
-        raise RuntimeError(response["data"]["createPost"]["message"])
-        
+    if "errors" in response: raise RuntimeError(f"Buffer Error: {response['errors'][0].get('message', 'Format Error')}")
+    if "data" not in response or "createPost" not in response["data"]: raise RuntimeError(f"Unexpected structure: {response}")
+    if "message" in response["data"]["createPost"]: raise RuntimeError(response["data"]["createPost"]["message"])
     return response["data"]["createPost"]["post"]
 
 def upload_video_to_cloudinary(local_path):
@@ -230,8 +204,8 @@ async def execute_posting(message, chat_id, state, scheduled_at):
 # ============================================================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("🔗 Connect Buffer", callback_data="connect")], [InlineKeyboardButton("📹 Post Video", callback_data="post")], [InlineKeyboardButton("🔌 Disconnect Buffer", callback_data="disconnect")]]
-    await update.message.reply_text("🚀 Animax Universal Poster\n\n1. Connect Buffer\n2. Send Video\n3. Choose Caption Mode\n4. Post or Schedule", reply_markup=InlineKeyboardMarkup(keyboard))
+    kb = [[InlineKeyboardButton("🔗 Connect Buffer", callback_data="connect")], [InlineKeyboardButton("📹 Post Video", callback_data="post")], [InlineKeyboardButton("🔌 Disconnect Buffer", callback_data="disconnect")]]
+    await update.message.reply_text("🚀 Animax Universal Poster\n\n1. Connect Buffer\n2. Send Video\n3. Choose Caption Mode\n4. Post or Schedule", reply_markup=InlineKeyboardMarkup(kb))
 
 async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -284,18 +258,14 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if query.data == "mode_ai_3":
-        if not GEMINI_API_KEY:
-            await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
-            return
+        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
         state["input_mode"] = "ai_3"
         state["waiting_caption_input"] = True
         await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
         return
 
     if query.data == "mode_ai_plat":
-        if not GEMINI_API_KEY:
-            await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
-            return
+        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
         state["input_mode"] = "ai_plat"
         state["waiting_caption_input"] = True
         await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
@@ -310,24 +280,16 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
 
     if query.data.startswith("sch_"):
         if not state.get("video_path") or not state.get("final_captions"):
-            await query.message.reply_text("❌ Data missing. Bhejo /post.")
-            return
+            return await query.message.reply_text("❌ Data missing. Bhejo /post.")
         
         if query.data == "sch_custom":
             state["waiting_schedule_time"] = True
-            await query.message.reply_text(
-                "✏️ **Custom Time Set Karein**\n\n"
-                "⚠️ *Note: Buffer API ke niyam anusaar aapko schedule time current time se kam se kam 30 minute aage ka rakhna hoga.*\n\n"
-                "Is format mein apna time bhejein: `YYYY-MM-DD HH:MM` (24-hour time)\n"
-                "Example: `2026-09-15 14:30`",
-                parse_mode="Markdown"
-            )
+            await query.message.reply_text("✏️ **Custom Time Set Karein**\n\n⚠️ *Note: Buffer API ke niyam anusaar aapko schedule time current time se kam se kam 30 minute aage ka rakhna hoga.*\n\nIs format mein apna time bhejein: `YYYY-MM-DD HH:MM` (24-hour time)\nExample: `2026-09-15 14:30`", parse_mode="Markdown")
             return
 
         scheduled_at = None
         if query.data != "sch_now":
             hours = int(query.data.split("_")[1])
-            # Time calculation with perfect Unix Timestamp formatting
             future_time = datetime.now(timezone.utc) + timedelta(hours=hours)
             scheduled_at = int(future_time.timestamp())
             await query.message.reply_text(f"⏳ Uploading... Post scheduled for {hours} hours from now!")
@@ -350,11 +312,7 @@ async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state["video_path"] = local_path
     state["waiting_video"] = False
 
-    kb = [
-        [InlineKeyboardButton("✍️ Manual Caption", callback_data="mode_manual")],
-        [InlineKeyboardButton("🤖 AI: 3 Options (Best SEO)", callback_data="mode_ai_3")],
-        [InlineKeyboardButton("🌍 AI: Platform Specific (YT/IG/FB)", callback_data="mode_ai_plat")]
-    ]
+    kb = [[InlineKeyboardButton("✍️ Manual Caption", callback_data="mode_manual")], [InlineKeyboardButton("🤖 AI: 3 Options (Best SEO)", callback_data="mode_ai_3")], [InlineKeyboardButton("🌍 AI: Platform Specific (YT/IG/FB)", callback_data="mode_ai_plat")]]
     await update.message.reply_text("✅ Video aagayi! Caption kaise likhna hai?", reply_markup=InlineKeyboardMarkup(kb))
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -364,20 +322,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state.get("waiting_schedule_time"):
         try:
-            # Fix: IST to UTC correct conversion
             user_dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
             ist_tz = timezone(timedelta(hours=5, minutes=30))
             user_dt_aware = user_dt.replace(tzinfo=ist_tz)
-            
-            now_ist = datetime.now(ist_tz)
-            
-            if user_dt_aware < now_ist + timedelta(minutes=30):
-                await update.message.reply_text("❌ **Error:** Time abhi ke time se kam se kam 30 minute aage ka hona chahiye.\n\nPhir se naya time type karein (Jaise: `2026-09-15 14:30`):", parse_mode="Markdown")
-                return
+            if user_dt_aware < datetime.now(ist_tz) + timedelta(minutes=30):
+                return await update.message.reply_text("❌ **Error:** Time abhi ke time se kam se kam 30 minute aage ka hona chahiye.\n\nPhir se naya time type karein (Jaise: `2026-09-15 14:30`):", parse_mode="Markdown")
             
             state["waiting_schedule_time"] = False
             scheduled_at = int(user_dt_aware.timestamp())
-            
             await update.message.reply_text(f"⏳ Uploading... Post scheduled for {text} (IST)!")
             await execute_posting(update.message, chat_id, state, scheduled_at)
         except ValueError:
@@ -385,7 +337,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not state.get("waiting_caption_input"): return
-
     state["waiting_caption_input"] = False
     mode = state.get("input_mode")
 
@@ -396,19 +347,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif mode == "ai_3":
         msg = await update.message.reply_text("⏳ AI is writing 3 variations...")
         try:
-            prompt = f"Write 3 highly engaging, viral captions for a short video about '{text}'. Include emojis and trending hashtags. Separate each distinct caption option exactly using the string '|||'."
+            # FIX: Forced length limit for general options (Max 50-60 words)
+            prompt = f"Write 3 highly engaging, viral, and SHORT captions (MAX 60 WORDS EACH) for a video about '{text}'. Include emojis and trending hashtags. Separate each distinct caption exactly using the string '|||'."
             
             client = genai.Client(api_key=GEMINI_API_KEY)
-            interaction = await asyncio.to_thread(
-                client.interactions.create,
-                model="gemini-3.8-flash",
-                input=prompt
-            )
+            interaction = await asyncio.to_thread(client.interactions.create, model="gemini-3.8-flash", input=prompt)
             res_text = interaction.output_text
             
             options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
-            if len(options) < 3:
-                options = [res_text, res_text, res_text]
+            if len(options) < 3: options = [res_text, res_text, res_text]
             
             state["ai_options"] = options
             kb = [[InlineKeyboardButton(f"Select Option {i+1}", callback_data=f"opt_{i}")] for i in range(3)]
@@ -420,14 +367,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif mode == "ai_plat":
         msg = await update.message.reply_text("⏳ AI is writing for YT, Insta & FB...")
         try:
-            prompt = f"Write 3 platform-specific captions for a short video about '{text}'.\n1. YouTube Shorts (Focus on viral title, hook, and add 5-7 popular hashtags like #Shorts).\n2. Instagram Reels (Aesthetic hook, relatable, and add 8-10 trending hashtags).\n3. Facebook Reels (Broad audience, engaging question, and add 4-5 relevant hashtags).\nSeparate them exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
+            # FIX: Forced extreme length limits for each platform based on their UI design
+            prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS. Only title and 3 tags (e.g. #Shorts).\n2. Instagram Reels: Aesthetic hook, max 2 short lines, 6-8 trending tags.\n3. Facebook Reels: Broad audience question, max 2 short lines, 4 tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
             client = genai.Client(api_key=GEMINI_API_KEY)
-            interaction = await asyncio.to_thread(
-                client.interactions.create,
-                model="gemini-3.8-flash",
-                input=prompt
-            )
+            interaction = await asyncio.to_thread(client.interactions.create, model="gemini-3.8-flash", input=prompt)
             raw = interaction.output_text
             
             yt = raw.split("YOUTUBE_START")[1].split("YOUTUBE_END")[0].strip() if "YOUTUBE_START" in raw else text
