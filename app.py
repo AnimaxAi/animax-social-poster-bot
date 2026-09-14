@@ -85,7 +85,7 @@ def generate_ai_text(prompt):
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY missing hai.")
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     headers = {"Content-Type": "application/json"}
     
@@ -378,7 +378,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res_text = await asyncio.to_thread(generate_ai_text, prompt)
             options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
             if len(options) < 3:
-                # Fallback if AI didn't separate properly
                 options = [res_text, res_text, res_text]
             
             state["ai_options"] = options
