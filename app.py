@@ -6,7 +6,7 @@ import os
 import secrets
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -26,7 +26,9 @@ from telegram.ext import (
     filters,
 )
 
-# Naya Google SDK
+# ============================================================
+# GOOGLE SDK
+# ============================================================
 from google import genai
 
 # ============================================================
@@ -155,8 +157,9 @@ def create_video_post(access_token, channel_id, text, public_url, service, sched
     safe_text, safe_url = escape_graphql_string(text), escape_graphql_string(public_url)
     service_metadata = build_service_metadata(service, text)
     
+    # Update: Pass Unix Timestamp (int) instead of string
     if scheduled_at:
-        sched_str = f'schedulingType: custom, scheduledAt: "{scheduled_at}"'
+        sched_str = f'schedulingType: custom, scheduledAt: {scheduled_at}'
     else:
         sched_str = 'schedulingType: automatic, mode: shareNow'
 
@@ -166,8 +169,20 @@ def create_video_post(access_token, channel_id, text, public_url, service, sched
         input: {{ text: "{safe_text}", channelId: "{channel_id}", {sched_str}, assets: [{{ video: {{ url: "{safe_url}", metadata: {{ thumbnailOffset: 2000 }} }} }}] {service_metadata} }}
       ) {{ ... on PostActionSuccess {{ post {{ id }} }} ... on MutationError {{ message }} }}
     }}'''
+    
     response = buffer_graphql(access_token, mutation)
-    if "message" in response["data"]["createPost"]: raise RuntimeError(response["data"]["createPost"]["message"])
+    
+    # Update: Smart Error Handling
+    if "errors" in response:
+        err_msg = response["errors"][0].get("message", "Unknown API Format Error")
+        raise RuntimeError(f"Buffer Error: {err_msg}")
+        
+    if "data" not in response or "createPost" not in response["data"]:
+        raise RuntimeError(f"Unexpected response structure: {response}")
+        
+    if "message" in response["data"]["createPost"]: 
+        raise RuntimeError(response["data"]["createPost"]["message"])
+        
     return response["data"]["createPost"]["post"]
 
 def upload_video_to_cloudinary(local_path):
@@ -211,7 +226,7 @@ async def execute_posting(message, chat_id, state, scheduled_at):
         clear_state(chat_id)
 
 # ============================================================
-# COMMAND HANDLERS (FIXED)
+# COMMAND HANDLERS
 # ============================================================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -312,8 +327,9 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         scheduled_at = None
         if query.data != "sch_now":
             hours = int(query.data.split("_")[1])
-            future_time = datetime.utcnow() + timedelta(hours=hours)
-            scheduled_at = future_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Time calculation with perfect Unix Timestamp formatting
+            future_time = datetime.now(timezone.utc) + timedelta(hours=hours)
+            scheduled_at = int(future_time.timestamp())
             await query.message.reply_text(f"⏳ Uploading... Post scheduled for {hours} hours from now!")
         else:
             await query.message.reply_text("⏳ Uploading video & Posting right now...")
@@ -348,16 +364,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state.get("waiting_schedule_time"):
         try:
+            # Fix: IST to UTC correct conversion
             user_dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
-            now_ist = datetime.utcnow() + timedelta(hours=5, minutes=30)
+            ist_tz = timezone(timedelta(hours=5, minutes=30))
+            user_dt_aware = user_dt.replace(tzinfo=ist_tz)
             
-            if user_dt < now_ist + timedelta(minutes=30):
+            now_ist = datetime.now(ist_tz)
+            
+            if user_dt_aware < now_ist + timedelta(minutes=30):
                 await update.message.reply_text("❌ **Error:** Time abhi ke time se kam se kam 30 minute aage ka hona chahiye.\n\nPhir se naya time type karein (Jaise: `2026-09-15 14:30`):", parse_mode="Markdown")
                 return
             
             state["waiting_schedule_time"] = False
-            utc_dt = user_dt - timedelta(hours=5, minutes=30)
-            scheduled_at = utc_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            scheduled_at = int(user_dt_aware.timestamp())
             
             await update.message.reply_text(f"⏳ Uploading... Post scheduled for {text} (IST)!")
             await execute_posting(update.message, chat_id, state, scheduled_at)
@@ -446,7 +465,6 @@ def buffer_callback():
 def main():
     telegram = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).pool_timeout(60).build()
     
-    # Naye command handlers connect ho gaye hain
     telegram.add_handler(CommandHandler("start", start_command))
     telegram.add_handler(CommandHandler("connect", connect_command))
     telegram.add_handler(CommandHandler("post", post_command))
