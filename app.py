@@ -13,7 +13,6 @@ from urllib.parse import urlencode
 import cloudinary
 import cloudinary.uploader
 import requests
-import google.generativeai as genai
 from dotenv import load_dotenv
 from flask import Flask, request
 from pymongo import MongoClient
@@ -28,7 +27,7 @@ from telegram.ext import (
 )
 
 # ============================================================
-# ENV & AI CONFIG
+# ENV CONFIG
 # ============================================================
 
 load_dotenv()
@@ -42,12 +41,6 @@ CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-1.0-pro')
-else:
-    ai_model = None
 
 PORT = int(os.getenv("PORT", "10000"))
 DOWNLOAD_DIR = Path("downloads")
@@ -83,6 +76,25 @@ def get_state(chat_id):
 def clear_state(chat_id):
     with memory_lock:
         memory.pop(chat_id, None)
+
+# ============================================================
+# DIRECT GOOGLE GEMINI API (NO PACKAGE REQUIRED)
+# ============================================================
+
+def generate_ai_text(prompt):
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY missing hai.")
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    headers = {"Content-Type": "application/json"}
+    
+    resp = requests.post(url, json=payload, headers=headers, timeout=30)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Google API Error: {resp.text}")
+    
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 # ============================================================
 # BUFFER CORE FUNCTIONS
@@ -179,20 +191,12 @@ def upload_video_to_cloudinary(local_path):
     result = cloudinary.uploader.upload(local_path, resource_type="video", folder="animax-social-poster", transformation=[{"width": 1080, "height": 1920, "crop": "pad", "background": "black"}, {"quality": "auto", "fetch_format": "mp4"}])
     return result.get("secure_url") or result.get("url")
 
-# ============================================================
-# SCHEDULE MENU HELPER
-# ============================================================
-
 def get_schedule_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Post Now", callback_data="sch_now")],
         [InlineKeyboardButton("🕒 In 3 Hours", callback_data="sch_3"), InlineKeyboardButton("🕒 In 12 Hours", callback_data="sch_12")],
         [InlineKeyboardButton("✏️ Manual Custom Time", callback_data="sch_custom")]
     ])
-
-# ============================================================
-# CORE POSTING FUNCTION
-# ============================================================
 
 async def execute_posting(message, chat_id, state, scheduled_at):
     try:
@@ -262,7 +266,7 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if query.data == "mode_ai_3":
-        if not ai_model:
+        if not GEMINI_API_KEY:
             await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
             return
         state["input_mode"] = "ai_3"
@@ -271,7 +275,7 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if query.data == "mode_ai_plat":
-        if not ai_model:
+        if not GEMINI_API_KEY:
             await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
             return
         state["input_mode"] = "ai_plat"
@@ -371,23 +375,25 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("⏳ AI is writing 3 variations...")
         try:
             prompt = f"Write 3 highly engaging, viral captions for a short video about '{text}'. Include emojis and trending hashtags. Separate each distinct caption option exactly using the string '|||'."
-            res = await asyncio.to_thread(ai_model.generate_content, prompt)
-            options = [opt.strip() for opt in res.text.split("|||") if opt.strip()]
-            if len(options) < 3: raise ValueError("AI output parsing error")
+            res_text = await asyncio.to_thread(generate_ai_text, prompt)
+            options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
+            if len(options) < 3:
+                # Fallback if AI didn't separate properly
+                options = [res_text, res_text, res_text]
             
             state["ai_options"] = options
             kb = [[InlineKeyboardButton(f"Select Option {i+1}", callback_data=f"opt_{i}")] for i in range(3)]
             formatted_text = "\n\n".join([f"**Option {i+1}:**\n{opt}" for i, opt in enumerate(options)])
             await msg.edit_text(f"🤖 Here are 3 options:\n\n{formatted_text}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         except Exception as e:
-            await msg.edit_text(f"❌ AI Error: {e}. Try again.")
+            await msg.edit_text(f"❌ AI Error: {e}")
 
     elif mode == "ai_plat":
         msg = await update.message.reply_text("⏳ AI is writing for YT, Insta & FB...")
         try:
             prompt = f"Write 3 platform-specific captions for a short video about '{text}'.\n1. YouTube Shorts (focus on title & subscription hook).\n2. Instagram Reels (aesthetic, relatable hook, many hashtags).\n3. Facebook Reels (broad audience, engagement question).\nSeparate them exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
-            res = await asyncio.to_thread(ai_model.generate_content, prompt)
-            raw = res.text
+            res_text = await asyncio.to_thread(generate_ai_text, prompt)
+            raw = res_text
             
             yt = raw.split("YOUTUBE_START")[1].split("YOUTUBE_END")[0].strip() if "YOUTUBE_START" in raw else text
             ig = raw.split("INSTAGRAM_START")[1].split("INSTAGRAM_END")[0].strip() if "INSTAGRAM_START" in raw else text
@@ -396,7 +402,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             state["final_captions"] = {"youtube": yt, "instagram": ig, "facebook": fb, "default": text}
             await msg.edit_text(f"✅ Platform Captions Ready!\n\n🔴 **YouTube:** {yt[:50]}...\n🟣 **Insta:** {ig[:50]}...\n🔵 **FB:** {fb[:50]}...\n\n**Kab post karna hai?**", parse_mode="Markdown", reply_markup=get_schedule_keyboard())
         except Exception as e:
-            await msg.edit_text(f"❌ AI Error: {e}. Try again.")
+            await msg.edit_text(f"❌ AI Error: {e}")
 
 # ============================================================
 # WEB ROUTES & MAIN
