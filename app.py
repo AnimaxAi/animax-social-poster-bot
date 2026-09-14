@@ -26,9 +26,7 @@ from telegram.ext import (
     filters,
 )
 
-# ============================================================
-# NAYA GOOGLE SDK IMPORT
-# ============================================================
+# Naya Google SDK
 from google import genai
 
 # ============================================================
@@ -81,25 +79,6 @@ def get_state(chat_id):
 def clear_state(chat_id):
     with memory_lock:
         memory.pop(chat_id, None)
-
-# ============================================================
-# NEW GOOGLE GEMINI AI FUNCTION (FROM OFFICIAL DOCS)
-# ============================================================
-
-def generate_ai_text(prompt):
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY missing hai.")
-    
-    # Naya client initialization
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    
-    # Naya interaction method and model (gemini-3.8-flash)
-    interaction = client.interactions.create(
-        model="gemini-3.8-flash",
-        input=prompt
-    )
-    
-    return interaction.output_text
 
 # ============================================================
 # BUFFER CORE FUNCTIONS
@@ -232,12 +211,31 @@ async def execute_posting(message, chat_id, state, scheduled_at):
         clear_state(chat_id)
 
 # ============================================================
-# AI & TELEGRAM HANDLERS
+# COMMAND HANDLERS (FIXED)
 # ============================================================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("🔗 Connect Buffer", callback_data="connect")], [InlineKeyboardButton("📹 Post Video", callback_data="post")], [InlineKeyboardButton("🔌 Disconnect Buffer", callback_data="disconnect")]]
     await update.message.reply_text("🚀 Animax Universal Poster\n\n1. Connect Buffer\n2. Send Video\n3. Choose Caption Mode\n4. Post or Schedule", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    verifier = make_verifier()
+    state_val = secrets.token_urlsafe(32)
+    db.oauth_states.insert_one({"state": state_val, "chat_id": chat_id, "verifier": verifier, "created_at": int(time.time())})
+    params = {"client_id": BUFFER_CLIENT_ID, "redirect_uri": BUFFER_REDIRECT_URI, "response_type": "code", "scope": BUFFER_SCOPES, "state": state_val, "code_challenge": make_challenge(verifier), "code_challenge_method": "S256", "prompt": "consent"}
+    await update.message.reply_text("🔗 Connect Buffer:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Login", url=f"{BUFFER_AUTH_URL}?{urlencode(params)}")]]))
+
+async def post_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    state = get_state(chat_id)
+    state.clear()
+    state["waiting_video"] = True
+    await update.message.reply_text("📹 Bhejo apni video.")
+
+# ============================================================
+# AI & TELEGRAM LOGIC
+# ============================================================
 
 async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -380,7 +378,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = await update.message.reply_text("⏳ AI is writing 3 variations...")
         try:
             prompt = f"Write 3 highly engaging, viral captions for a short video about '{text}'. Include emojis and trending hashtags. Separate each distinct caption option exactly using the string '|||'."
-            res_text = await asyncio.to_thread(generate_ai_text, prompt)
+            
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            interaction = await asyncio.to_thread(
+                client.interactions.create,
+                model="gemini-3.8-flash",
+                input=prompt
+            )
+            res_text = interaction.output_text
+            
             options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
             if len(options) < 3:
                 options = [res_text, res_text, res_text]
@@ -395,16 +401,24 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif mode == "ai_plat":
         msg = await update.message.reply_text("⏳ AI is writing for YT, Insta & FB...")
         try:
-            prompt = f"Write 3 platform-specific captions for a short video about '{text}'.\n1. YouTube Shorts (focus on title & subscription hook).\n2. Instagram Reels (aesthetic, relatable hook, many hashtags).\n3. Facebook Reels (broad audience, engagement question).\nSeparate them exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
-            res_text = await asyncio.to_thread(generate_ai_text, prompt)
-            raw = res_text
+            prompt = f"Write 3 platform-specific captions for a short video about '{text}'.\n1. YouTube Shorts (Focus on viral title, hook, and add 5-7 popular hashtags like #Shorts).\n2. Instagram Reels (Aesthetic hook, relatable, and add 8-10 trending hashtags).\n3. Facebook Reels (Broad audience, engaging question, and add 4-5 relevant hashtags).\nSeparate them exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
+            
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            interaction = await asyncio.to_thread(
+                client.interactions.create,
+                model="gemini-3.8-flash",
+                input=prompt
+            )
+            raw = interaction.output_text
             
             yt = raw.split("YOUTUBE_START")[1].split("YOUTUBE_END")[0].strip() if "YOUTUBE_START" in raw else text
             ig = raw.split("INSTAGRAM_START")[1].split("INSTAGRAM_END")[0].strip() if "INSTAGRAM_START" in raw else text
             fb = raw.split("FACEBOOK_START")[1].split("FACEBOOK_END")[0].strip() if "FACEBOOK_START" in raw else text
             
             state["final_captions"] = {"youtube": yt, "instagram": ig, "facebook": fb, "default": text}
-            await msg.edit_text(f"✅ Platform Captions Ready!\n\n🔴 **YouTube:** {yt[:50]}...\n🟣 **Insta:** {ig[:50]}...\n🔵 **FB:** {fb[:50]}...\n\n**Kab post karna hai?**", parse_mode="Markdown", reply_markup=get_schedule_keyboard())
+            
+            display_text = f"✅ **Platform Captions Ready!**\n\n🔴 **YouTube:**\n{yt}\n\n🟣 **Insta:**\n{ig}\n\n🔵 **FB:**\n{fb}\n\n**Kab post karna hai?**"
+            await msg.edit_text(display_text, parse_mode="Markdown", reply_markup=get_schedule_keyboard())
         except Exception as e:
             await msg.edit_text(f"❌ AI Error: {e}")
 
@@ -431,12 +445,16 @@ def buffer_callback():
 
 def main():
     telegram = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).pool_timeout(60).build()
+    
+    # Naye command handlers connect ho gaye hain
     telegram.add_handler(CommandHandler("start", start_command))
-    telegram.add_handler(CommandHandler("connect", lambda u, c: send_buffer_connect_link(u.effective_chat.id, c.bot)))
-    telegram.add_handler(CommandHandler("post", lambda u, c: post_command(u, c)))
+    telegram.add_handler(CommandHandler("connect", connect_command))
+    telegram.add_handler(CommandHandler("post", post_command))
+    
     telegram.add_handler(CallbackQueryHandler(callback_button_handler))
     telegram.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, video_handler))
     telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    
     threading.Thread(target=lambda: web.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False), daemon=True).start()
     telegram.run_polling(allowed_updates=Update.ALL_TYPES)
 
