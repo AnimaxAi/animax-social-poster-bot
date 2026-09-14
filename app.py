@@ -26,9 +26,6 @@ from telegram.ext import (
     filters,
 )
 
-# GOOGLE SDK
-from google import genai
-
 # ============================================================
 # ENV CONFIG
 # ============================================================
@@ -59,7 +56,7 @@ memory = {}
 memory_lock = threading.Lock()
 
 # ============================================================
-# DATABASE
+# DATABASE (MONGODB)
 # ============================================================
 
 if not MONGO_URI: raise RuntimeError("MONGO_URI is missing in environment variables.")
@@ -77,7 +74,26 @@ def clear_state(chat_id):
     with memory_lock: memory.pop(chat_id, None)
 
 # ============================================================
-# BUFFER CORE
+# DIRECT GOOGLE GEMINI API (FAST, CRASH-FREE, NO PACKAGES)
+# ============================================================
+
+def generate_ai_text(prompt):
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY missing hai.")
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    headers = {"Content-Type": "application/json"}
+    
+    resp = requests.post(url, json=payload, headers=headers, timeout=30)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Google API Error: {resp.text}")
+    
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+# ============================================================
+# BUFFER CORE FUNCTIONS
 # ============================================================
 
 def make_verifier(): return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
@@ -129,7 +145,7 @@ def escape_graphql_string(value):
 def build_service_metadata(service, text):
     service_name = (service or "").strip().lower()
     first_line = (text or "").splitlines()[0].strip() if text else "New Short"
-    yt_title = escape_graphql_string(first_line[:90])  # YT title hard limit
+    yt_title = escape_graphql_string(first_line[:90])
 
     if "youtube" in service_name: return f'metadata: {{ youtube: {{ title: "{yt_title}", categoryId: "24", privacy: public, madeForKids: false, notifySubscribers: true, embeddable: true }} }}'
     if "instagram" in service_name: return 'metadata: { instagram: { type: reel, shouldShareToFeed: true } }'
@@ -140,11 +156,11 @@ def create_video_post(access_token, channel_id, text, public_url, service, sched
     safe_text, safe_url = escape_graphql_string(text), escape_graphql_string(public_url)
     service_metadata = build_service_metadata(service, text)
     
-    # FIX: Added required "mode" for Buffer Custom Scheduling
+    # 🔴 FIX: UPPERCASE ENUMS FOR BUFFER SCHEDULING
     if scheduled_at:
-        sched_str = f'schedulingType: custom, mode: custom, scheduledAt: {scheduled_at}'
+        sched_str = f'schedulingType: CUSTOM, mode: CUSTOM, scheduledAt: {scheduled_at}'
     else:
-        sched_str = 'schedulingType: automatic, mode: shareNow'
+        sched_str = 'schedulingType: AUTOMATIC, mode: SHARE_NOW'
 
     mutation = f'''
     mutation CreateVideoPost {{
@@ -347,12 +363,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif mode == "ai_3":
         msg = await update.message.reply_text("⏳ AI is writing 3 variations...")
         try:
-            # FIX: Forced length limit for general options (Max 50-60 words)
-            prompt = f"Write 3 highly engaging, viral, and SHORT captions (MAX 60 WORDS EACH) for a video about '{text}'. Include emojis and trending hashtags. Separate each distinct caption exactly using the string '|||'."
+            # 🔴 FIX: STRICT SHORT LIMITS FOR OPTIONS
+            prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 15-20 words per caption.\n- Maximum 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            interaction = await asyncio.to_thread(client.interactions.create, model="gemini-3.8-flash", input=prompt)
-            res_text = interaction.output_text
+            res_text = await asyncio.to_thread(generate_ai_text, prompt)
             
             options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
             if len(options) < 3: options = [res_text, res_text, res_text]
@@ -367,12 +381,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif mode == "ai_plat":
         msg = await update.message.reply_text("⏳ AI is writing for YT, Insta & FB...")
         try:
-            # FIX: Forced extreme length limits for each platform based on their UI design
-            prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS. Only title and 3 tags (e.g. #Shorts).\n2. Instagram Reels: Aesthetic hook, max 2 short lines, 6-8 trending tags.\n3. Facebook Reels: Broad audience question, max 2 short lines, 4 tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
+            # 🔴 FIX: STRICT SHORT LIMITS FOR PLATFORMS
+            prompt = f"Write 3 platform-specific captions for a video about '{text}'.\nSTRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total. Only 1 short hook and 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            interaction = await asyncio.to_thread(client.interactions.create, model="gemini-3.8-flash", input=prompt)
-            raw = interaction.output_text
+            res_text = await asyncio.to_thread(generate_ai_text, prompt)
+            raw = res_text
             
             yt = raw.split("YOUTUBE_START")[1].split("YOUTUBE_END")[0].strip() if "YOUTUBE_START" in raw else text
             ig = raw.split("INSTAGRAM_START")[1].split("INSTAGRAM_END")[0].strip() if "INSTAGRAM_START" in raw else text
