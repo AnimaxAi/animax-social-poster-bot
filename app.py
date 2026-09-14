@@ -27,6 +27,11 @@ from telegram.ext import (
 )
 
 # ============================================================
+# NAYA GOOGLE SDK IMPORT
+# ============================================================
+from google import genai
+
+# ============================================================
 # ENV CONFIG
 # ============================================================
 
@@ -78,23 +83,23 @@ def clear_state(chat_id):
         memory.pop(chat_id, None)
 
 # ============================================================
-# DIRECT GOOGLE GEMINI API (NO PACKAGE REQUIRED)
+# NEW GOOGLE GEMINI AI FUNCTION (FROM OFFICIAL DOCS)
 # ============================================================
 
 def generate_ai_text(prompt):
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY missing hai.")
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    headers = {"Content-Type": "application/json"}
+    # Naya client initialization
+    client = genai.Client(api_key=GEMINI_API_KEY)
     
-    resp = requests.post(url, json=payload, headers=headers, timeout=30)
-    if resp.status_code != 200:
-        raise RuntimeError(f"Google API Error: {resp.text}")
+    # Naya interaction method and model (gemini-3.8-flash)
+    interaction = client.interactions.create(
+        model="gemini-3.8-flash",
+        input=prompt
+    )
     
-    data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    return interaction.output_text
 
 # ============================================================
 # BUFFER CORE FUNCTIONS
