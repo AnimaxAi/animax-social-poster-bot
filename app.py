@@ -25,7 +25,7 @@ from telegram.ext import (
     filters,
 )
 
-# Naya Google GenAI SDK
+# Google GenAI SDK
 from google import genai
 
 # ============================================================
@@ -139,7 +139,6 @@ def create_video_post(access_token, channel_id, text, public_url, service):
     safe_text, safe_url = escape_graphql_string(text), escape_graphql_string(public_url)
     service_metadata = build_service_metadata(service, text)
     
-    # SCHEDULE HATA DIYA - Ab sirf Direct POST NOW hoga (jo 100% kaam kar raha tha)
     sched_str = 'schedulingType: automatic, mode: shareNow'
 
     mutation = f'''
@@ -155,20 +154,24 @@ def create_video_post(access_token, channel_id, text, public_url, service):
     if "message" in response["data"]["createPost"]: raise RuntimeError(response["data"]["createPost"]["message"])
     return response["data"]["createPost"]["post"]
 
+# 🔴 FIX: Ab upload hone par public_id bhi return hogi (delete karne ke liye)
 def upload_video_to_cloudinary(local_path):
     cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET, secure=True)
     result = cloudinary.uploader.upload(local_path, resource_type="video", folder="animax-social-poster", transformation=[{"width": 1080, "height": 1920, "crop": "pad", "background": "black"}, {"quality": "auto", "fetch_format": "mp4"}])
-    return result.get("secure_url") or result.get("url")
+    url = result.get("secure_url") or result.get("url")
+    public_id = result.get("public_id")
+    return url, public_id
 
-# Naya Simplified Keyboard - Sirf Post Now
 def get_post_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚀 Post Now", callback_data="sch_now")]
     ])
 
 async def execute_posting(message, chat_id, state):
+    public_id = None
     try:
-        public_url = await asyncio.to_thread(upload_video_to_cloudinary, state["video_path"])
+        # 🔴 FIX: Unpack url and public_id
+        public_url, public_id = await asyncio.to_thread(upload_video_to_cloudinary, state["video_path"])
         access_token = await asyncio.to_thread(get_access_token, chat_id)
         channels = await asyncio.to_thread(sync_channels, chat_id)
         
@@ -186,6 +189,21 @@ async def execute_posting(message, chat_id, state):
 
         res = ["📊 POST RESULT", ""] + success + ([""] + failed if failed else [])
         await message.reply_text("\n".join(res)[:3900])
+        
+        # 🔴 SMART AUTO-DELETE TASK (Runs in background)
+        if public_id:
+            async def delete_after_delay(pid):
+                await asyncio.sleep(300) # Wait for 5 Minutes so Buffer can download it
+                try:
+                    cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET, secure=True)
+                    cloudinary.uploader.destroy(pid, resource_type="video")
+                    print(f"Cloudinary Auto-Delete: {pid} permanently removed.")
+                except Exception as e:
+                    print(f"Cloudinary Auto-Delete Failed: {e}")
+            
+            asyncio.create_task(delete_after_delay(public_id))
+            await message.reply_text("🧹 *Cloudinary storage will auto-clean in 5 minutes!*", parse_mode="Markdown")
+
     except Exception as e:
         await message.reply_text(f"❌ Error: {e}")
     finally:
@@ -272,7 +290,6 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text(f"✅ Selected:\n\n{selected_text}\n\n**Ready to post?**", reply_markup=get_post_keyboard())
         return
 
-    # Sirf sch_now bacha hai
     if query.data == "sch_now":
         if not state.get("video_path") or not state.get("final_captions"):
             return await query.message.reply_text("❌ Data missing. Bhejo /post.")
