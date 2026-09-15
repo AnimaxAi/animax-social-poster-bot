@@ -26,7 +26,7 @@ from telegram.ext import (
     filters,
 )
 
-# GOOGLE SDK
+# Naya Google GenAI SDK
 from google import genai
 
 # ============================================================
@@ -129,7 +129,7 @@ def escape_graphql_string(value):
 def build_service_metadata(service, text):
     service_name = (service or "").strip().lower()
     first_line = (text or "").splitlines()[0].strip() if text else "New Short"
-    yt_title = escape_graphql_string(first_line[:80])
+    yt_title = escape_graphql_string(first_line[:80]) # Limits basic YT metadata to 80 chars
 
     if "youtube" in service_name: return f'metadata: {{ youtube: {{ title: "{yt_title}", categoryId: "24", privacy: public, madeForKids: false, notifySubscribers: true, embeddable: true }} }}'
     if "instagram" in service_name: return 'metadata: { instagram: { type: reel, shouldShareToFeed: true } }'
@@ -140,11 +140,13 @@ def create_video_post(access_token, channel_id, text, public_url, service, sched
     safe_text, safe_url = escape_graphql_string(text), escape_graphql_string(public_url)
     service_metadata = build_service_metadata(service, text)
     
-    # 🔴 FINAL FIX: Removed unnecessary fields and used EXACT lowercase Enums required by Buffer API
+    # 🔴 ULTIMATE FIX FOR BUFFER GRAPHQL ENUMS
+    # schedulingType MUST be present and MUST be 'automatic'
+    # mode controls the actual behavior ('shareNow' vs 'custom')
     if scheduled_at:
-        sched_str = f'mode: schedule, scheduledAt: {scheduled_at}'
+        sched_str = f'schedulingType: automatic, mode: custom, scheduledAt: {scheduled_at}'
     else:
-        sched_str = 'mode: shareNow'
+        sched_str = 'schedulingType: automatic, mode: shareNow'
 
     mutation = f'''
     mutation CreateVideoPost {{
