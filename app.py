@@ -6,7 +6,6 @@ import os
 import secrets
 import threading
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -136,15 +135,12 @@ def build_service_metadata(service, text):
     if "facebook" in service_name: return 'metadata: { facebook: { type: reel } }'
     return ""
 
-def create_video_post(access_token, channel_id, text, public_url, service, scheduled_at=None):
+def create_video_post(access_token, channel_id, text, public_url, service):
     safe_text, safe_url = escape_graphql_string(text), escape_graphql_string(public_url)
     service_metadata = build_service_metadata(service, text)
     
-    # 🔴 FIX: Buffer strictly expects "schedule" as the ShareMode when scheduling!
-    if scheduled_at:
-        sched_str = f'schedulingType: automatic, mode: schedule, scheduledAt: {scheduled_at}'
-    else:
-        sched_str = 'schedulingType: automatic, mode: shareNow'
+    # SCHEDULE HATA DIYA - Ab sirf Direct POST NOW hoga (jo 100% kaam kar raha tha)
+    sched_str = 'schedulingType: automatic, mode: shareNow'
 
     mutation = f'''
     mutation CreateVideoPost {{
@@ -164,14 +160,13 @@ def upload_video_to_cloudinary(local_path):
     result = cloudinary.uploader.upload(local_path, resource_type="video", folder="animax-social-poster", transformation=[{"width": 1080, "height": 1920, "crop": "pad", "background": "black"}, {"quality": "auto", "fetch_format": "mp4"}])
     return result.get("secure_url") or result.get("url")
 
-def get_schedule_keyboard():
+# Naya Simplified Keyboard - Sirf Post Now
+def get_post_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🚀 Post Now", callback_data="sch_now")],
-        [InlineKeyboardButton("🕒 In 3 Hours", callback_data="sch_3"), InlineKeyboardButton("🕒 In 12 Hours", callback_data="sch_12")],
-        [InlineKeyboardButton("✏️ Manual Custom Time", callback_data="sch_custom")]
+        [InlineKeyboardButton("🚀 Post Now", callback_data="sch_now")]
     ])
 
-async def execute_posting(message, chat_id, state, scheduled_at):
+async def execute_posting(message, chat_id, state):
     try:
         public_url = await asyncio.to_thread(upload_video_to_cloudinary, state["video_path"])
         access_token = await asyncio.to_thread(get_access_token, chat_id)
@@ -181,11 +176,10 @@ async def execute_posting(message, chat_id, state, scheduled_at):
         for ch in channels:
             service = ch.get("service", "unknown")
             name = ch.get("displayName") or ch["name"]
-            
             caption_to_post = state["final_captions"].get(service, state["final_captions"].get("default", ""))
             
             try:
-                await asyncio.to_thread(create_video_post, access_token, ch["id"], caption_to_post, public_url, service, scheduled_at)
+                await asyncio.to_thread(create_video_post, access_token, ch["id"], caption_to_post, public_url, service)
                 success.append(f"✅ {service}: {name}")
             except Exception as exc:
                 failed.append(f"❌ {service}: {name}\n   {exc}")
@@ -205,7 +199,7 @@ async def execute_posting(message, chat_id, state, scheduled_at):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("🔗 Connect Buffer", callback_data="connect")], [InlineKeyboardButton("📹 Post Video", callback_data="post")], [InlineKeyboardButton("🔌 Disconnect Buffer", callback_data="disconnect")]]
-    await update.message.reply_text("🚀 Animax Universal Poster\n\n1. Connect Buffer\n2. Send Video\n3. Choose Caption Mode\n4. Post or Schedule", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("🚀 Animax Universal Poster\n\n1. Connect Buffer\n2. Send Video\n3. Choose Caption Mode\n4. Direct Post", reply_markup=InlineKeyboardMarkup(kb))
 
 async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -275,28 +269,16 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         idx = int(query.data.split("_")[1])
         selected_text = state.get("ai_options", [])[idx]
         state["final_captions"] = {"default": selected_text}
-        await query.message.reply_text(f"✅ Selected:\n\n{selected_text}\n\n**Kab post karna hai?**", reply_markup=get_schedule_keyboard())
+        await query.message.reply_text(f"✅ Selected:\n\n{selected_text}\n\n**Ready to post?**", reply_markup=get_post_keyboard())
         return
 
-    if query.data.startswith("sch_"):
+    # Sirf sch_now bacha hai
+    if query.data == "sch_now":
         if not state.get("video_path") or not state.get("final_captions"):
             return await query.message.reply_text("❌ Data missing. Bhejo /post.")
         
-        if query.data == "sch_custom":
-            state["waiting_schedule_time"] = True
-            await query.message.reply_text("✏️ **Custom Time Set Karein**\n\n⚠️ *Note: Buffer API ke niyam anusaar aapko schedule time current time se kam se kam 30 minute aage ka rakhna hoga.*\n\nIs format mein apna time bhejein: `YYYY-MM-DD HH:MM` (24-hour time)\nExample: `2026-09-15 14:30`", parse_mode="Markdown")
-            return
-
-        scheduled_at = None
-        if query.data != "sch_now":
-            hours = int(query.data.split("_")[1])
-            future_time = datetime.now(timezone.utc) + timedelta(hours=hours)
-            scheduled_at = int(future_time.timestamp())
-            await query.message.reply_text(f"⏳ Uploading... Post scheduled for {hours} hours from now!")
-        else:
-            await query.message.reply_text("⏳ Uploading video & Posting right now...")
-
-        await execute_posting(query.message, chat_id, state, scheduled_at)
+        await query.message.reply_text("⏳ Uploading video & Posting right now...")
+        await execute_posting(query.message, chat_id, state)
         return
 
 async def video_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -320,29 +302,13 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = get_state(chat_id)
     text = update.message.text.strip()
 
-    if state.get("waiting_schedule_time"):
-        try:
-            user_dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
-            ist_tz = timezone(timedelta(hours=5, minutes=30))
-            user_dt_aware = user_dt.replace(tzinfo=ist_tz)
-            if user_dt_aware < datetime.now(ist_tz) + timedelta(minutes=30):
-                return await update.message.reply_text("❌ **Error:** Time abhi ke time se kam se kam 30 minute aage ka hona chahiye.\n\nPhir se naya time type karein (Jaise: `2026-09-15 14:30`):", parse_mode="Markdown")
-            
-            state["waiting_schedule_time"] = False
-            scheduled_at = int(user_dt_aware.timestamp())
-            await update.message.reply_text(f"⏳ Uploading... Post scheduled for {text} (IST)!")
-            await execute_posting(update.message, chat_id, state, scheduled_at)
-        except ValueError:
-            await update.message.reply_text("❌ Galat format! Kripya sahi format mein likhein:\n`YYYY-MM-DD HH:MM`\n(Jaise: `2026-09-15 14:30`)", parse_mode="Markdown")
-        return
-
     if not state.get("waiting_caption_input"): return
     state["waiting_caption_input"] = False
     mode = state.get("input_mode")
 
     if mode == "manual":
         state["final_captions"] = {"default": text}
-        await update.message.reply_text(f"✅ Ready:\n\n{text}\n\n**Kab post karna hai?**", reply_markup=get_schedule_keyboard())
+        await update.message.reply_text(f"✅ Ready:\n\n{text}\n\n**Ready to post?**", reply_markup=get_post_keyboard())
 
     elif mode == "ai_3":
         msg = await update.message.reply_text("⏳ AI is writing 3 variations...")
@@ -378,8 +344,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             state["final_captions"] = {"youtube": yt, "instagram": ig, "facebook": fb, "default": text}
             
-            display_text = f"✅ **Platform Captions Ready!**\n\n🔴 **YouTube:**\n{yt}\n\n🟣 **Insta:**\n{ig}\n\n🔵 **FB:**\n{fb}\n\n**Kab post karna hai?**"
-            await msg.edit_text(display_text, parse_mode="Markdown", reply_markup=get_schedule_keyboard())
+            display_text = f"✅ **Platform Captions Ready!**\n\n🔴 **YouTube:**\n{yt}\n\n🟣 **Insta:**\n{ig}\n\n🔵 **FB:**\n{fb}\n\n**Ready to post?**"
+            await msg.edit_text(display_text, parse_mode="Markdown", reply_markup=get_post_keyboard())
         except Exception as e:
             await msg.edit_text(f"❌ AI Error: {e}")
 
