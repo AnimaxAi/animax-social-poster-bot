@@ -26,7 +26,7 @@ from telegram.ext import (
     filters,
 )
 
-# Naya Google GenAI SDK
+# GOOGLE SDK
 from google import genai
 
 # ============================================================
@@ -129,7 +129,7 @@ def escape_graphql_string(value):
 def build_service_metadata(service, text):
     service_name = (service or "").strip().lower()
     first_line = (text or "").splitlines()[0].strip() if text else "New Short"
-    yt_title = escape_graphql_string(first_line[:80]) # Limits basic YT metadata to 80 chars
+    yt_title = escape_graphql_string(first_line[:80])
 
     if "youtube" in service_name: return f'metadata: {{ youtube: {{ title: "{yt_title}", categoryId: "24", privacy: public, madeForKids: false, notifySubscribers: true, embeddable: true }} }}'
     if "instagram" in service_name: return 'metadata: { instagram: { type: reel, shouldShareToFeed: true } }'
@@ -140,11 +140,11 @@ def create_video_post(access_token, channel_id, text, public_url, service, sched
     safe_text, safe_url = escape_graphql_string(text), escape_graphql_string(public_url)
     service_metadata = build_service_metadata(service, text)
     
-    # 🔴 FIX: UPPERCASE ENUM 'CUSTOM' FOR BUFFER SCHEDULING (No quotes)
+    # 🔴 FINAL FIX: Removed unnecessary fields and used EXACT lowercase Enums required by Buffer API
     if scheduled_at:
-        sched_str = f'schedulingType: CUSTOM, scheduledAt: {scheduled_at}'
+        sched_str = f'mode: schedule, scheduledAt: {scheduled_at}'
     else:
-        sched_str = 'schedulingType: AUTOMATIC, mode: SHARE_NOW'
+        sched_str = 'mode: shareNow'
 
     mutation = f'''
     mutation CreateVideoPost {{
@@ -347,10 +347,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif mode == "ai_3":
         msg = await update.message.reply_text("⏳ AI is writing 3 variations...")
         try:
-            # 🔴 FIX: ULTRA STRICT LIMITS (80 chars, 3 tags)
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
-            # Using the exact new SDK client setup
             client = genai.Client(api_key=GEMINI_API_KEY)
             interaction = await asyncio.to_thread(client.interactions.create, model="gemini-3.8-flash", input=prompt)
             res_text = interaction.output_text
@@ -368,10 +366,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif mode == "ai_plat":
         msg = await update.message.reply_text("⏳ AI is writing for YT, Insta & FB...")
         try:
-            # 🔴 FIX: ULTRA STRICT LIMITS FOR PLATFORMS
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
-            # Using the exact new SDK client setup
             client = genai.Client(api_key=GEMINI_API_KEY)
             interaction = await asyncio.to_thread(client.interactions.create, model="gemini-3.8-flash", input=prompt)
             raw = interaction.output_text
