@@ -43,7 +43,7 @@ CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 
-# MULTI-KEY SYSTEM: Fetching list of keys
+# MULTI-KEY SYSTEM
 KEYS_ENV = os.getenv("GEMINI_API_KEYS", "").strip()
 if KEYS_ENV:
     GEMINI_API_KEY_LIST = [k.strip() for k in KEYS_ENV.split(",") if k.strip()]
@@ -243,7 +243,7 @@ async def fetch_gemini_with_rotation(prompt):
                 client = genai.Client(api_key=current_key)
                 return client.interactions.create(model="gemini-3.8-flash", input=prompt)
             
-            # 🔴 FIX: Timeout badha kar 10 Minutes (600 seconds) kar diya hai!
+            # 10 Minutes (600 seconds) timeout
             interaction = await asyncio.wait_for(asyncio.to_thread(make_call, key), timeout=600.0)
             return interaction.output_text
             
@@ -254,9 +254,8 @@ async def fetch_gemini_with_rotation(prompt):
         except Exception as e:
             last_error = str(e)
             print(f"⚠️ Key {idx + 1} Failed: {last_error}. Switching to next...")
-            continue # Agli key par jump karega
+            continue
             
-    # Agar saari keys fail ho jayein:
     raise RuntimeError(f"🚨 Sabhi {len(GEMINI_API_KEY_LIST)} API keys fail ho gayi hain! Kripya fresh key add karein.\n\nAkhiri Error: {last_error}")
 
 # ============================================================
@@ -375,7 +374,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state["final_captions"] = {"default": text}
         await update.message.reply_text(f"✅ Ready:\n\n{text}\n\n**Ready to post?**", reply_markup=get_post_keyboard())
 
-    elif mode == "ai_3":
+    # 🔴 FIX: Yahan wapas "mode_ai_3" aur "mode_ai_plat" kar diya hai!
+    elif mode == "mode_ai_3":
         msg = await update.message.reply_text("⏳ Gemini is writing 3 variations... (Max wait: 10 mins)")
         try:
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
@@ -393,7 +393,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await msg.edit_text(str(e)) 
 
-    elif mode == "ai_plat":
+    elif mode == "mode_ai_plat":
         msg = await update.message.reply_text("⏳ Gemini is writing for YT, Insta & FB... (Max wait: 10 mins)")
         try:
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
