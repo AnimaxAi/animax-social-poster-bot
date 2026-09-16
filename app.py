@@ -25,8 +25,8 @@ from telegram.ext import (
     filters,
 )
 
-# 🟢 ChatGPT SDK
-from openai import AsyncOpenAI
+# 🟢 Wapas Gemini par shift (Kyunki code ab perfectly bug-free hai)
+from google import genai
 
 # ============================================================
 # ENV CONFIG
@@ -43,8 +43,9 @@ CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 
-# OPENAI KEY
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+if GEMINI_API_KEY:
+    os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 
 PORT = int(os.getenv("PORT", "10000"))
 DOWNLOAD_DIR = Path("downloads")
@@ -280,19 +281,15 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("✍️ Apna caption type karke bhejo:")
         return
 
-    # 🔴 FIX: Mode variables ko wapas unke original naam ('ai_3' aur 'ai_plat') par set kar diya
-    if query.data == "mode_ai_3":
-        if not OPENAI_API_KEY: return await query.message.reply_text("❌ OPENAI_API_KEY missing hai.")
-        state["input_mode"] = "ai_3"
+    if query.data in ["mode_ai_3", "mode_ai_plat"]:
+        if not GEMINI_API_KEY: 
+            return await query.message.reply_text("❌ GEMINI_API_KEY missing hai. Render dashboard check karein.")
+        state["input_mode"] = query.data
         state["waiting_caption_input"] = True
-        await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
-        return
-
-    if query.data == "mode_ai_plat":
-        if not OPENAI_API_KEY: return await query.message.reply_text("❌ OPENAI_API_KEY missing hai.")
-        state["input_mode"] = "ai_plat"
-        state["waiting_caption_input"] = True
-        await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
+        if query.data == "mode_ai_3":
+            await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
+        else:
+            await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
         return
 
     if query.data.startswith("opt_"):
@@ -343,19 +340,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Ready:\n\n{text}\n\n**Ready to post?**", reply_markup=get_post_keyboard())
 
     elif mode == "ai_3":
-        msg = await update.message.reply_text("⏳ ChatGPT is writing 3 variations...")
+        msg = await update.message.reply_text("⏳ Gemini is writing 3 variations...")
         try:
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}]
-                ),
-                timeout=60.0
-            )
-            res_text = response.choices[0].message.content
+            def fetch_ai_3():
+                client = genai.Client()
+                return client.interactions.create(model="gemini-2.5-flash", input=prompt)
+            
+            # 120 seconds ka safe timeout
+            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_3), timeout=120.0)
+            res_text = interaction.output_text
             
             options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
             if len(options) < 3: options = [res_text, res_text, res_text]
@@ -368,22 +363,20 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except asyncio.TimeoutError:
             await msg.edit_text("❌ AI Error: Request Timed Out ⏳.")
         except Exception as e:
-            await msg.edit_text(f"❌ OpenAI Error: {e}")
+            await msg.edit_text(f"❌ Gemini Error: {e}")
 
     elif mode == "ai_plat":
-        msg = await update.message.reply_text("⏳ ChatGPT is writing for YT, Insta & FB...")
+        msg = await update.message.reply_text("⏳ Gemini is writing for YT, Insta & FB...")
         try:
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
-            client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-            response = await asyncio.wait_for(
-                client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}]
-                ),
-                timeout=60.0
-            )
-            raw = response.choices[0].message.content
+            def fetch_ai_plat():
+                client = genai.Client()
+                return client.interactions.create(model="gemini-2.5-flash", input=prompt)
+            
+            # 120 seconds ka safe timeout
+            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_plat), timeout=120.0)
+            raw = interaction.output_text
             
             yt = raw.split("YOUTUBE_START")[1].split("YOUTUBE_END")[0].strip() if "YOUTUBE_START" in raw else text
             ig = raw.split("INSTAGRAM_START")[1].split("INSTAGRAM_END")[0].strip() if "INSTAGRAM_START" in raw else text
@@ -397,7 +390,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except asyncio.TimeoutError:
             await msg.edit_text("❌ AI Error: Request Timed Out ⏳.")
         except Exception as e:
-            await msg.edit_text(f"❌ OpenAI Error: {e}")
+            await msg.edit_text(f"❌ Gemini Error: {e}")
 
 # ============================================================
 # WEB ROUTES & MAIN
@@ -432,6 +425,7 @@ def main():
     telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
     threading.Thread(target=lambda: web.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False), daemon=True).start()
+    # 🔴 drop_pending_updates=True abhi bhi on hai taaki koi Ghost error na aaye
     telegram.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__": main()
