@@ -42,8 +42,6 @@ CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
-
-# OPENAI KEY
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
 PORT = int(os.getenv("PORT", "10000"))
@@ -327,7 +325,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = get_state(chat_id)
     text = update.message.text.strip()
 
-    if not state.get("waiting_caption_input"): return
+    # 🔴 SAFETY ALARM: Agar ghost bot message churane ki koshish karega toh yahan pakda jayega
+    if not state.get("waiting_caption_input"): 
+        await update.message.reply_text("⚠️ Bot restart hua hai ya message galat jagah chala gaya. Kripya /post dabakar video dobara bhejein.")
+        return
+        
     state["waiting_caption_input"] = False
     mode = state.get("input_mode")
 
@@ -414,7 +416,6 @@ def buffer_callback():
     return "<h2>✅ Buffer connected! Return to Telegram.</h2>"
 
 def main():
-    # 🔴 FIX: 'drop_pending_updates=True' add kar diya. Ab purane atke hue messages bot crash nahi karenge.
     telegram = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).pool_timeout(60).build()
     
     telegram.add_handler(CommandHandler("start", start_command))
