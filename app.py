@@ -25,7 +25,7 @@ from telegram.ext import (
     filters,
 )
 
-# 🟢 Naya ChatGPT SDK
+# 🟢 ChatGPT SDK
 from openai import AsyncOpenAI
 
 # ============================================================
@@ -43,7 +43,7 @@ CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 
-# 🟢 OPENAI KEY
+# OPENAI KEY
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
 PORT = int(os.getenv("PORT", "10000"))
@@ -280,7 +280,6 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("✍️ Apna caption type karke bhejo:")
         return
 
-    # 🟢 OPENAI VALIDATION
     if query.data in ["mode_ai_3", "mode_ai_plat"]:
         if not OPENAI_API_KEY: 
             return await query.message.reply_text("❌ OPENAI_API_KEY missing hai. Render dashboard check karein.")
@@ -341,11 +340,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
-            # 🟢 OPENAI INTEGRATION
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             response = await asyncio.wait_for(
                 client.chat.completions.create(
-                    model="gpt-4o-mini", # Super fast & cheap model
+                    model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}]
                 ),
                 timeout=60.0
@@ -370,11 +368,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
-            # 🟢 OPENAI INTEGRATION
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
             response = await asyncio.wait_for(
                 client.chat.completions.create(
-                    model="gpt-4o-mini", # Super fast & cheap model
+                    model="gpt-4o-mini",
                     messages=[{"role": "user", "content": prompt}]
                 ),
                 timeout=60.0
@@ -417,6 +414,7 @@ def buffer_callback():
     return "<h2>✅ Buffer connected! Return to Telegram.</h2>"
 
 def main():
+    # 🔴 FIX: 'drop_pending_updates=True' add kar diya. Ab purane atke hue messages bot crash nahi karenge.
     telegram = Application.builder().token(TELEGRAM_BOT_TOKEN).read_timeout(60).write_timeout(60).connect_timeout(60).pool_timeout(60).build()
     
     telegram.add_handler(CommandHandler("start", start_command))
@@ -428,6 +426,6 @@ def main():
     telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
     threading.Thread(target=lambda: web.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False), daemon=True).start()
-    telegram.run_polling(allowed_updates=Update.ALL_TYPES)
+    telegram.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__": main()
