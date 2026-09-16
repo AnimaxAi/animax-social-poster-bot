@@ -42,6 +42,8 @@ CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
+
+# OPENAI KEY
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 
 PORT = int(os.getenv("PORT", "10000"))
@@ -278,15 +280,19 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("✍️ Apna caption type karke bhejo:")
         return
 
-    if query.data in ["mode_ai_3", "mode_ai_plat"]:
-        if not OPENAI_API_KEY: 
-            return await query.message.reply_text("❌ OPENAI_API_KEY missing hai. Render dashboard check karein.")
-        state["input_mode"] = query.data
+    # 🔴 FIX: Mode variables ko wapas unke original naam ('ai_3' aur 'ai_plat') par set kar diya
+    if query.data == "mode_ai_3":
+        if not OPENAI_API_KEY: return await query.message.reply_text("❌ OPENAI_API_KEY missing hai.")
+        state["input_mode"] = "ai_3"
         state["waiting_caption_input"] = True
-        if query.data == "mode_ai_3":
-            await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
-        else:
-            await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
+        await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
+        return
+
+    if query.data == "mode_ai_plat":
+        if not OPENAI_API_KEY: return await query.message.reply_text("❌ OPENAI_API_KEY missing hai.")
+        state["input_mode"] = "ai_plat"
+        state["waiting_caption_input"] = True
+        await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
         return
 
     if query.data.startswith("opt_"):
@@ -325,7 +331,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = get_state(chat_id)
     text = update.message.text.strip()
 
-    # 🔴 SAFETY ALARM: Agar ghost bot message churane ki koshish karega toh yahan pakda jayega
     if not state.get("waiting_caption_input"): 
         await update.message.reply_text("⚠️ Bot restart hua hai ya message galat jagah chala gaya. Kripya /post dabakar video dobara bhejein.")
         return
