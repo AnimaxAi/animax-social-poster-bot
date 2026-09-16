@@ -6,6 +6,7 @@ import os
 import secrets
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -154,11 +155,26 @@ def create_video_post(access_token, channel_id, text, public_url, service):
     if "message" in response["data"]["createPost"]: raise RuntimeError(response["data"]["createPost"]["message"])
     return response["data"]["createPost"]["post"]
 
-# 🔴 FIX: Ab upload hone par public_id bhi return hogi (delete karne ke liye)
+# 🔴 FIX: Eager Upload for Instagram Reels Support (No Loading Delay for Buffer)
 def upload_video_to_cloudinary(local_path):
     cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET, secure=True)
-    result = cloudinary.uploader.upload(local_path, resource_type="video", folder="animax-social-poster", transformation=[{"width": 1080, "height": 1920, "crop": "pad", "background": "black"}, {"quality": "auto", "fetch_format": "mp4"}])
-    url = result.get("secure_url") or result.get("url")
+    
+    eager_options = [{"width": 1080, "height": 1920, "crop": "pad", "background": "black"}]
+    
+    result = cloudinary.uploader.upload(
+        local_path, 
+        resource_type="video", 
+        folder="animax-social-poster",
+        eager=eager_options,
+        eager_async=False # Upload hone tak wait karega, taaki direct processed link mile
+    )
+    
+    # Processed (Ready) URL fetch karna Buffer ke liye
+    if "eager" in result and len(result["eager"]) > 0:
+        url = result["eager"][0].get("secure_url")
+    else:
+        url = result.get("secure_url")
+        
     public_id = result.get("public_id")
     return url, public_id
 
@@ -170,7 +186,6 @@ def get_post_keyboard():
 async def execute_posting(message, chat_id, state):
     public_id = None
     try:
-        # 🔴 FIX: Unpack url and public_id
         public_url, public_id = await asyncio.to_thread(upload_video_to_cloudinary, state["video_path"])
         access_token = await asyncio.to_thread(get_access_token, chat_id)
         channels = await asyncio.to_thread(sync_channels, chat_id)
@@ -190,19 +205,19 @@ async def execute_posting(message, chat_id, state):
         res = ["📊 POST RESULT", ""] + success + ([""] + failed if failed else [])
         await message.reply_text("\n".join(res)[:3900])
         
-        # 🔴 SMART AUTO-DELETE TASK (Runs in background)
+        # 🔴 FIX: Delete Timer increased to 1 Hour to save Buffer from breaking!
         if public_id:
             async def delete_after_delay(pid):
-                await asyncio.sleep(300) # Wait for 5 Minutes so Buffer can download it
+                await asyncio.sleep(3600) # 3600 seconds = 1 hour
                 try:
                     cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET, secure=True)
                     cloudinary.uploader.destroy(pid, resource_type="video")
-                    print(f"Cloudinary Auto-Delete: {pid} permanently removed.")
+                    print(f"Cloudinary Auto-Delete: {pid} removed.")
                 except Exception as e:
-                    print(f"Cloudinary Auto-Delete Failed: {e}")
+                    pass
             
             asyncio.create_task(delete_after_delay(public_id))
-            await message.reply_text("🧹 *Cloudinary storage will auto-clean in 5 minutes!*", parse_mode="Markdown")
+            await message.reply_text("🧹 *Cloudinary storage will auto-clean in 1 hour!*", parse_mode="Markdown")
 
     except Exception as e:
         await message.reply_text(f"❌ Error: {e}")
