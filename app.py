@@ -25,7 +25,7 @@ from telegram.ext import (
     filters,
 )
 
-# 🟢 Wapas Gemini par shift (Kyunki code ab perfectly bug-free hai)
+# 🟢 Gemini SDK
 from google import genai
 
 # ============================================================
@@ -275,21 +275,25 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("📹 Bhejo apni video.")
         return
 
+    # 🔴 FIX: Yahan maine EXACTLY "ai_3" aur "ai_plat" set kar diya hai memory mein
     if query.data == "mode_manual":
         state["input_mode"] = "manual"
         state["waiting_caption_input"] = True
         await query.message.reply_text("✍️ Apna caption type karke bhejo:")
         return
 
-    if query.data in ["mode_ai_3", "mode_ai_plat"]:
-        if not GEMINI_API_KEY: 
-            return await query.message.reply_text("❌ GEMINI_API_KEY missing hai. Render dashboard check karein.")
-        state["input_mode"] = query.data
+    if query.data == "mode_ai_3":
+        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
+        state["input_mode"] = "ai_3"
         state["waiting_caption_input"] = True
-        if query.data == "mode_ai_3":
-            await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
-        else:
-            await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
+        await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
+        return
+
+    if query.data == "mode_ai_plat":
+        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
+        state["input_mode"] = "ai_plat"
+        state["waiting_caption_input"] = True
+        await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
         return
 
     if query.data.startswith("opt_"):
@@ -348,7 +352,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 client = genai.Client()
                 return client.interactions.create(model="gemini-2.5-flash", input=prompt)
             
-            # 120 seconds ka safe timeout
             interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_3), timeout=120.0)
             res_text = interaction.output_text
             
@@ -374,7 +377,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 client = genai.Client()
                 return client.interactions.create(model="gemini-2.5-flash", input=prompt)
             
-            # 120 seconds ka safe timeout
             interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_plat), timeout=120.0)
             raw = interaction.output_text
             
@@ -425,7 +427,6 @@ def main():
     telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
     threading.Thread(target=lambda: web.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False), daemon=True).start()
-    # 🔴 drop_pending_updates=True abhi bhi on hai taaki koi Ghost error na aaye
     telegram.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__": main()
