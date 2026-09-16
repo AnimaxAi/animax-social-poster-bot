@@ -275,7 +275,6 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("📹 Bhejo apni video.")
         return
 
-    # 🔴 FIX: Yahan maine EXACTLY "ai_3" aur "ai_plat" set kar diya hai memory mein
     if query.data == "mode_manual":
         state["input_mode"] = "manual"
         state["waiting_caption_input"] = True
@@ -348,9 +347,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
+            # 🔴 FIX: Updated to 'gemini-3.8-flash' as instructed by the API
             def fetch_ai_3():
                 client = genai.Client()
-                return client.interactions.create(model="gemini-2.5-flash", input=prompt)
+                return client.interactions.create(model="gemini-3.8-flash", input=prompt)
             
             interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_3), timeout=120.0)
             res_text = interaction.output_text
@@ -373,9 +373,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
+            # 🔴 FIX: Updated to 'gemini-3.8-flash' as instructed by the API
             def fetch_ai_plat():
                 client = genai.Client()
-                return client.interactions.create(model="gemini-2.5-flash", input=prompt)
+                return client.interactions.create(model="gemini-3.8-flash", input=prompt)
             
             interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_plat), timeout=120.0)
             raw = interaction.output_text
