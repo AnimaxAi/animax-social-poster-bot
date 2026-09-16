@@ -43,9 +43,13 @@ CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-if GEMINI_API_KEY:
-    os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+# MULTI-KEY SYSTEM: Fetching list of keys
+KEYS_ENV = os.getenv("GEMINI_API_KEYS", "").strip()
+if KEYS_ENV:
+    GEMINI_API_KEY_LIST = [k.strip() for k in KEYS_ENV.split(",") if k.strip()]
+else:
+    old_key = os.getenv("GEMINI_API_KEY", "").strip()
+    GEMINI_API_KEY_LIST = [old_key] if old_key else []
 
 PORT = int(os.getenv("PORT", "10000"))
 DOWNLOAD_DIR = Path("downloads")
@@ -224,6 +228,38 @@ async def execute_posting(message, chat_id, state):
         clear_state(chat_id)
 
 # ============================================================
+# API KEY ROTATION ENGINE
+# ============================================================
+async def fetch_gemini_with_rotation(prompt):
+    if not GEMINI_API_KEY_LIST:
+        raise RuntimeError("❌ Koi API Key nahi mili! Render pe GEMINI_API_KEYS set karein.")
+        
+    last_error = ""
+    for idx, key in enumerate(GEMINI_API_KEY_LIST):
+        try:
+            print(f"🔄 Trying Gemini Key {idx + 1}/{len(GEMINI_API_KEY_LIST)}...")
+            
+            def make_call(current_key):
+                client = genai.Client(api_key=current_key)
+                return client.interactions.create(model="gemini-3.8-flash", input=prompt)
+            
+            # 🔴 FIX: Timeout badha kar 10 Minutes (600 seconds) kar diya hai!
+            interaction = await asyncio.wait_for(asyncio.to_thread(make_call, key), timeout=600.0)
+            return interaction.output_text
+            
+        except asyncio.TimeoutError:
+            last_error = "Timeout Error"
+            print(f"⚠️ Key {idx + 1} Timed Out. Switching to next...")
+            continue
+        except Exception as e:
+            last_error = str(e)
+            print(f"⚠️ Key {idx + 1} Failed: {last_error}. Switching to next...")
+            continue # Agli key par jump karega
+            
+    # Agar saari keys fail ho jayein:
+    raise RuntimeError(f"🚨 Sabhi {len(GEMINI_API_KEY_LIST)} API keys fail ho gayi hain! Kripya fresh key add karein.\n\nAkhiri Error: {last_error}")
+
+# ============================================================
 # COMMAND HANDLERS
 # ============================================================
 
@@ -281,18 +317,15 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         await query.message.reply_text("✍️ Apna caption type karke bhejo:")
         return
 
-    if query.data == "mode_ai_3":
-        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
-        state["input_mode"] = "ai_3"
+    if query.data in ["mode_ai_3", "mode_ai_plat"]:
+        if not GEMINI_API_KEY_LIST: 
+            return await query.message.reply_text("❌ Koi GEMINI API KEY nahi mili. Render dashboard check karein.")
+        state["input_mode"] = query.data
         state["waiting_caption_input"] = True
-        await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
-        return
-
-    if query.data == "mode_ai_plat":
-        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
-        state["input_mode"] = "ai_plat"
-        state["waiting_caption_input"] = True
-        await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
+        if query.data == "mode_ai_3":
+            await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
+        else:
+            await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
         return
 
     if query.data.startswith("opt_"):
@@ -343,17 +376,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Ready:\n\n{text}\n\n**Ready to post?**", reply_markup=get_post_keyboard())
 
     elif mode == "ai_3":
-        msg = await update.message.reply_text("⏳ Gemini is writing 3 variations...")
+        msg = await update.message.reply_text("⏳ Gemini is writing 3 variations... (Max wait: 10 mins)")
         try:
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
-            # 🔴 FIX: Updated to 'gemini-3.8-flash' as instructed by the API
-            def fetch_ai_3():
-                client = genai.Client()
-                return client.interactions.create(model="gemini-3.8-flash", input=prompt)
-            
-            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_3), timeout=120.0)
-            res_text = interaction.output_text
+            res_text = await fetch_gemini_with_rotation(prompt)
             
             options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
             if len(options) < 3: options = [res_text, res_text, res_text]
@@ -363,23 +390,15 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             formatted_text = "\n\n".join([f"**Option {i+1}:**\n{opt}" for i, opt in enumerate(options)])
             await msg.edit_text(f"🤖 Here are 3 options:\n\n{formatted_text}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
             
-        except asyncio.TimeoutError:
-            await msg.edit_text("❌ AI Error: Request Timed Out ⏳.")
         except Exception as e:
-            await msg.edit_text(f"❌ Gemini Error: {e}")
+            await msg.edit_text(str(e)) 
 
     elif mode == "ai_plat":
-        msg = await update.message.reply_text("⏳ Gemini is writing for YT, Insta & FB...")
+        msg = await update.message.reply_text("⏳ Gemini is writing for YT, Insta & FB... (Max wait: 10 mins)")
         try:
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
-            # 🔴 FIX: Updated to 'gemini-3.8-flash' as instructed by the API
-            def fetch_ai_plat():
-                client = genai.Client()
-                return client.interactions.create(model="gemini-3.8-flash", input=prompt)
-            
-            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_plat), timeout=120.0)
-            raw = interaction.output_text
+            raw = await fetch_gemini_with_rotation(prompt)
             
             yt = raw.split("YOUTUBE_START")[1].split("YOUTUBE_END")[0].strip() if "YOUTUBE_START" in raw else text
             ig = raw.split("INSTAGRAM_START")[1].split("INSTAGRAM_END")[0].strip() if "INSTAGRAM_START" in raw else text
@@ -390,10 +409,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             display_text = f"✅ **Platform Captions Ready!**\n\n🔴 **YouTube:**\n{yt}\n\n🟣 **Insta:**\n{ig}\n\n🔵 **FB:**\n{fb}\n\n**Ready to post?**"
             await msg.edit_text(display_text, parse_mode="Markdown", reply_markup=get_post_keyboard())
             
-        except asyncio.TimeoutError:
-            await msg.edit_text("❌ AI Error: Request Timed Out ⏳.")
         except Exception as e:
-            await msg.edit_text(f"❌ Gemini Error: {e}")
+            await msg.edit_text(str(e)) 
 
 # ============================================================
 # WEB ROUTES & MAIN
