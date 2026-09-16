@@ -236,12 +236,12 @@ async def fetch_gemini_with_rotation(prompt):
             print(f"🔄 Trying Gemini Key {idx + 1}/{len(GEMINI_API_KEY_LIST)} via DIRECT REST API...")
             
             def make_call(current_key):
-                # 🟢 Bypassing Google SDK entirely. Direct REST API Call.
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={current_key}"
+                # 🔴 FIX: Yahan model ka naam 'gemini-3.8-flash' kar diya hai!
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={current_key}"
                 headers = {'Content-Type': 'application/json'}
                 data = {"contents": [{"parts": [{"text": prompt}]}]}
                 
-                # Agar Google latkega, toh sirf 30 sec latkega, phir error fek dega!
+                # Direct HTTP request, bypass SDK logic
                 response = requests.post(url, headers=headers, json=data, timeout=30)
                 
                 if response.status_code != 200:
@@ -253,7 +253,6 @@ async def fetch_gemini_with_rotation(prompt):
                 except (KeyError, IndexError):
                     raise Exception(f"API Blocked or Empty Response: {result}")
             
-            # Agar call successful raha toh return kar do
             res_text = await asyncio.wait_for(asyncio.to_thread(make_call, key), timeout=45.0)
             return res_text
             
