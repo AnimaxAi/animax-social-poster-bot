@@ -25,7 +25,7 @@ from telegram.ext import (
     filters,
 )
 
-# Naya Google GenAI SDK (Interactions API)
+# Google GenAI SDK (Interactions API)
 from google import genai
 
 # ============================================================
@@ -44,7 +44,6 @@ CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-# 🔴 FIX: Doc ke hisaab se SDK ke liye OS Environment variable set karna zaroori hai
 if GEMINI_API_KEY:
     os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 
@@ -283,14 +282,14 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if query.data == "mode_ai_3":
-        if not os.getenv("GEMINI_API_KEY"): return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
+        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
         state["input_mode"] = "ai_3"
         state["waiting_caption_input"] = True
         await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
         return
 
     if query.data == "mode_ai_plat":
-        if not os.getenv("GEMINI_API_KEY"): return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
+        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
         state["input_mode"] = "ai_plat"
         state["waiting_caption_input"] = True
         await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
@@ -345,12 +344,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
-            # 🔴 FIX: SDK call ko Async Function me wrap karke 15 Sec Timeout laga diya gaya hai
+            # 🔴 FIX: Timeout badha kar 60 seconds kar diya gaya hai, model wapas 3.8-flash set kar diya.
             def fetch_ai_3():
-                client = genai.Client()
+                client = genai.Client(api_key=GEMINI_API_KEY)
                 return client.interactions.create(model="gemini-3.8-flash", input=prompt)
             
-            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_3), timeout=15.0)
+            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_3), timeout=60.0)
             res_text = interaction.output_text
             
             options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
@@ -362,7 +361,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"🤖 Here are 3 options:\n\n{formatted_text}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
             
         except asyncio.TimeoutError:
-            await msg.edit_text("❌ AI Error: Request Timed Out ⏳ (Aapki Google API Quota limit khatam ho chuki hai, isliye SDK atak gaya. Nayi Gmail ID se API Key banakar daalein!).")
+            await msg.edit_text("❌ AI Error: Request Timed Out ⏳ (AI ko likhne mein thoda time lag gaya. Kripya dobara try karein!).")
         except Exception as e:
             await msg.edit_text(f"❌ AI Error: {e}")
 
@@ -371,12 +370,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
-            # 🔴 FIX: SDK call ko Async Function me wrap karke 15 Sec Timeout laga diya gaya hai
+            # 🔴 FIX: Timeout badha kar 60 seconds kar diya gaya hai, model wapas 3.8-flash set kar diya.
             def fetch_ai_plat():
-                client = genai.Client()
+                client = genai.Client(api_key=GEMINI_API_KEY)
                 return client.interactions.create(model="gemini-3.8-flash", input=prompt)
             
-            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_plat), timeout=15.0)
+            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_plat), timeout=60.0)
             raw = interaction.output_text
             
             yt = raw.split("YOUTUBE_START")[1].split("YOUTUBE_END")[0].strip() if "YOUTUBE_START" in raw else text
@@ -389,7 +388,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(display_text, parse_mode="Markdown", reply_markup=get_post_keyboard())
             
         except asyncio.TimeoutError:
-            await msg.edit_text("❌ AI Error: Request Timed Out ⏳ (Aapki Google API Quota limit khatam ho chuki hai, isliye SDK atak gaya. Nayi Gmail ID se API Key banakar daalein!).")
+            await msg.edit_text("❌ AI Error: Request Timed Out ⏳ (AI ko likhne mein thoda time lag gaya. Kripya dobara try karein!).")
         except Exception as e:
             await msg.edit_text(f"❌ AI Error: {e}")
 
