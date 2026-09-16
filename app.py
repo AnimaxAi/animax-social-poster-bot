@@ -6,7 +6,6 @@ import os
 import secrets
 import threading
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -26,7 +25,7 @@ from telegram.ext import (
     filters,
 )
 
-# Google GenAI SDK
+# Naya Google GenAI SDK (Interactions API)
 from google import genai
 
 # ============================================================
@@ -44,6 +43,10 @@ CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
 MONGO_URI = os.getenv("MONGO_URI", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+
+# 🔴 FIX: Doc ke hisaab se SDK ke liye OS Environment variable set karna zaroori hai
+if GEMINI_API_KEY:
+    os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 
 PORT = int(os.getenv("PORT", "10000"))
 DOWNLOAD_DIR = Path("downloads")
@@ -155,10 +158,8 @@ def create_video_post(access_token, channel_id, text, public_url, service):
     if "message" in response["data"]["createPost"]: raise RuntimeError(response["data"]["createPost"]["message"])
     return response["data"]["createPost"]["post"]
 
-# 🔴 FIX: Eager Upload for Instagram Reels Support (No Loading Delay for Buffer)
 def upload_video_to_cloudinary(local_path):
     cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET, secure=True)
-    
     eager_options = [{"width": 1080, "height": 1920, "crop": "pad", "background": "black"}]
     
     result = cloudinary.uploader.upload(
@@ -166,10 +167,9 @@ def upload_video_to_cloudinary(local_path):
         resource_type="video", 
         folder="animax-social-poster",
         eager=eager_options,
-        eager_async=False # Upload hone tak wait karega, taaki direct processed link mile
+        eager_async=False
     )
     
-    # Processed (Ready) URL fetch karna Buffer ke liye
     if "eager" in result and len(result["eager"]) > 0:
         url = result["eager"][0].get("secure_url")
     else:
@@ -205,15 +205,13 @@ async def execute_posting(message, chat_id, state):
         res = ["📊 POST RESULT", ""] + success + ([""] + failed if failed else [])
         await message.reply_text("\n".join(res)[:3900])
         
-        # 🔴 FIX: Delete Timer increased to 1 Hour to save Buffer from breaking!
         if public_id:
             async def delete_after_delay(pid):
-                await asyncio.sleep(3600) # 3600 seconds = 1 hour
+                await asyncio.sleep(3600)
                 try:
                     cloudinary.config(cloud_name=CLOUDINARY_CLOUD_NAME, api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET, secure=True)
                     cloudinary.uploader.destroy(pid, resource_type="video")
-                    print(f"Cloudinary Auto-Delete: {pid} removed.")
-                except Exception as e:
+                except Exception:
                     pass
             
             asyncio.create_task(delete_after_delay(public_id))
@@ -285,14 +283,14 @@ async def callback_button_handler(update: Update, context: ContextTypes.DEFAULT_
         return
 
     if query.data == "mode_ai_3":
-        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
+        if not os.getenv("GEMINI_API_KEY"): return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
         state["input_mode"] = "ai_3"
         state["waiting_caption_input"] = True
         await query.message.reply_text("🤖 Topic batao (e.g., 'anime status'):")
         return
 
     if query.data == "mode_ai_plat":
-        if not GEMINI_API_KEY: return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
+        if not os.getenv("GEMINI_API_KEY"): return await query.message.reply_text("❌ GEMINI_API_KEY missing hai.")
         state["input_mode"] = "ai_plat"
         state["waiting_caption_input"] = True
         await query.message.reply_text("🌍 Topic batao. Main YT, Insta aur FB ke liye alag captions likhunga:")
@@ -347,8 +345,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            interaction = await asyncio.to_thread(client.interactions.create, model="gemini-3.8-flash", input=prompt)
+            # 🔴 FIX: SDK call ko Async Function me wrap karke 15 Sec Timeout laga diya gaya hai
+            def fetch_ai_3():
+                client = genai.Client()
+                return client.interactions.create(model="gemini-3.8-flash", input=prompt)
+            
+            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_3), timeout=15.0)
             res_text = interaction.output_text
             
             options = [opt.strip() for opt in res_text.split("|||") if opt.strip()]
@@ -358,6 +360,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [[InlineKeyboardButton(f"Select Option {i+1}", callback_data=f"opt_{i}")] for i in range(3)]
             formatted_text = "\n\n".join([f"**Option {i+1}:**\n{opt}" for i, opt in enumerate(options)])
             await msg.edit_text(f"🤖 Here are 3 options:\n\n{formatted_text}", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+            
+        except asyncio.TimeoutError:
+            await msg.edit_text("❌ AI Error: Request Timed Out ⏳ (Aapki Google API Quota limit khatam ho chuki hai, isliye SDK atak gaya. Nayi Gmail ID se API Key banakar daalein!).")
         except Exception as e:
             await msg.edit_text(f"❌ AI Error: {e}")
 
@@ -366,8 +371,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
-            client = genai.Client(api_key=GEMINI_API_KEY)
-            interaction = await asyncio.to_thread(client.interactions.create, model="gemini-3.8-flash", input=prompt)
+            # 🔴 FIX: SDK call ko Async Function me wrap karke 15 Sec Timeout laga diya gaya hai
+            def fetch_ai_plat():
+                client = genai.Client()
+                return client.interactions.create(model="gemini-3.8-flash", input=prompt)
+            
+            interaction = await asyncio.wait_for(asyncio.to_thread(fetch_ai_plat), timeout=15.0)
             raw = interaction.output_text
             
             yt = raw.split("YOUTUBE_START")[1].split("YOUTUBE_END")[0].strip() if "YOUTUBE_START" in raw else text
@@ -378,6 +387,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             display_text = f"✅ **Platform Captions Ready!**\n\n🔴 **YouTube:**\n{yt}\n\n🟣 **Insta:**\n{ig}\n\n🔵 **FB:**\n{fb}\n\n**Ready to post?**"
             await msg.edit_text(display_text, parse_mode="Markdown", reply_markup=get_post_keyboard())
+            
+        except asyncio.TimeoutError:
+            await msg.edit_text("❌ AI Error: Request Timed Out ⏳ (Aapki Google API Quota limit khatam ho chuki hai, isliye SDK atak gaya. Nayi Gmail ID se API Key banakar daalein!).")
         except Exception as e:
             await msg.edit_text(f"❌ AI Error: {e}")
 
