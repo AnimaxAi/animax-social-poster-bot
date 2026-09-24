@@ -224,7 +224,7 @@ async def execute_posting(message, chat_id, state):
         clear_state(chat_id)
 
 # ============================================================
-# DIRECT REST API ROTATION ENGINE (Zero SDK Bugs)
+# API KEY ROTATION ENGINE (With Auto-Retry for 503)
 # ============================================================
 async def fetch_gemini_with_rotation(prompt):
     if not GEMINI_API_KEY_LIST:
@@ -232,40 +232,45 @@ async def fetch_gemini_with_rotation(prompt):
         
     last_error = ""
     for idx, key in enumerate(GEMINI_API_KEY_LIST):
-        try:
-            print(f"🔄 Trying Gemini Key {idx + 1}/{len(GEMINI_API_KEY_LIST)} via DIRECT REST API...")
-            
-            def make_call(current_key):
-                # 🔴 FIX: Yahan model ka naam 'gemini-3.8-flash' kar diya hai!
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={current_key}"
-                headers = {'Content-Type': 'application/json'}
-                data = {"contents": [{"parts": [{"text": prompt}]}]}
+        # 🔴 NAYA ZIDDI MODE: Agar 503 (Server Busy) aayega, toh ek hi key par 3 baar try karega 5 seconds ruk kar
+        for attempt in range(3):
+            try:
+                print(f"🔄 Trying Gemini Key {idx + 1}/{len(GEMINI_API_KEY_LIST)} (Attempt {attempt+1}/3)...")
                 
-                # Direct HTTP request, bypass SDK logic
-                response = requests.post(url, headers=headers, json=data, timeout=30)
-                
-                if response.status_code != 200:
-                    raise Exception(f"HTTP {response.status_code}: {response.text}")
+                def make_call(current_key):
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={current_key}"
+                    headers = {'Content-Type': 'application/json'}
+                    data = {"contents": [{"parts": [{"text": prompt}]}]}
                     
-                result = response.json()
-                try:
-                    return result['candidates'][0]['content']['parts'][0]['text']
-                except (KeyError, IndexError):
-                    raise Exception(f"API Blocked or Empty Response: {result}")
+                    response = requests.post(url, headers=headers, json=data, timeout=30)
+                    
+                    if response.status_code != 200:
+                        raise Exception(f"HTTP {response.status_code}: {response.text}")
+                        
+                    result = response.json()
+                    try:
+                        return result['candidates'][0]['content']['parts'][0]['text']
+                    except (KeyError, IndexError):
+                        raise Exception(f"API Blocked or Empty Response: {result}")
+                
+                res_text = await asyncio.wait_for(asyncio.to_thread(make_call, key), timeout=60.0)
+                return res_text
+                
+            except Exception as e:
+                err_str = str(e)
+                # Agar Google ka server busy hai (503), toh break nahi karenge, balki wait karenge
+                if "503" in err_str or "UNAVAILABLE" in err_str:
+                    print(f"⚠️ Google Server Busy. Retrying in 5 seconds...")
+                    await asyncio.sleep(5)
+                    last_error = err_str
+                    continue # Same key wapas try karega
+                else:
+                    # Agar quota (429) ya 404 error hai, toh seedha agli key par jump karo
+                    last_error = err_str
+                    print(f"⚠️ Key {idx + 1} Failed: {last_error[:100]}. Switching to next key...")
+                    break 
             
-            res_text = await asyncio.wait_for(asyncio.to_thread(make_call, key), timeout=45.0)
-            return res_text
-            
-        except asyncio.TimeoutError:
-            last_error = "REST API Timed Out"
-            print(f"⚠️ Key {idx + 1} Timed Out. Switching to next...")
-            continue
-        except Exception as e:
-            last_error = str(e)
-            print(f"⚠️ Key {idx + 1} Failed. Switching to next... Error: {last_error[:100]}")
-            continue
-            
-    raise RuntimeError(f"🚨 Sabhi {len(GEMINI_API_KEY_LIST)} API keys fail ho gayi hain! Akhiri Error: {last_error[:300]}")
+    raise RuntimeError(f"🚨 Sabhi API keys aur retries fail ho gaye! (Google servers are overloaded)\n\nAkhiri Error: {last_error[:300]}")
 
 # ============================================================
 # COMMAND HANDLERS
@@ -384,7 +389,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Ready:\n\n{text}\n\n**Ready to post?**", reply_markup=get_post_keyboard())
 
     elif mode == "mode_ai_3":
-        msg = await update.message.reply_text("⏳ Gemini is writing 3 variations...")
+        msg = await update.message.reply_text("⏳ Gemini is writing 3 variations... (Auto-retrying if busy)")
         try:
             prompt = f"Write 3 highly engaging, viral, and VERY SHORT captions for a video about '{text}'.\nSTRICT RULES:\n- Maximum 80 CHARACTERS TOTAL per caption.\n- Strictly 3 hashtags per caption.\n- Separate each distinct caption exactly using the string '|||'."
             
@@ -402,7 +407,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(str(e)) 
 
     elif mode == "mode_ai_plat":
-        msg = await update.message.reply_text("⏳ Gemini is writing for YT, Insta & FB...")
+        msg = await update.message.reply_text("⏳ Gemini is writing for YT, Insta & FB... (Auto-retrying if busy)")
         try:
             prompt = f"Write 3 platform-specific captions for a video about '{text}'. STRICT RULES:\n1. YouTube Shorts: STRICTLY MAX 80 CHARACTERS total and exactly 3 hashtags.\n2. Instagram Reels: Max 2 short lines, 4-5 trending tags.\n3. Facebook Reels: Max 2 short lines, 2-3 relevant tags.\nSeparate exactly like this:\nYOUTUBE_START\n[text]\nYOUTUBE_END\nINSTAGRAM_START\n[text]\nINSTAGRAM_END\nFACEBOOK_START\n[text]\nFACEBOOK_END"
             
